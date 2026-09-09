@@ -69,10 +69,22 @@ UNet-Lab/
 
 ```bash
 pip install "opencv-python-headless<5" "numpy==1.26.4" scikit-image
+pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cu118
 ```
 
 > 建议：为本工程建一个独立 conda 环境，按 `requirements.txt` 安装，避免污染基础环境。
 > 原工程 `requirements.txt` 里 torch 固定 1.13.1+cu117，若沿用请相应选择匹配的 numpy/opencv。
+
+**libnvrtc 软链接（torch 2.0.0+cu118 装完后必做一次）**：cuDNN 运行时会
+`dlopen("libnvrtc.so")`（无版本号），但 torch wheel 只带哈希命名的 `libnvrtc-*.so.11.2`。
+`requirements.txt` 已加入 `nvidia-cuda-nvrtc-cu11`（提供标准 `libnvrtc.so.11.2`），
+但仍需在 `torch/lib` 里补一个软链接指向它，否则卷积时报
+`libnvrtc.so: cannot open shared object file` 并 core dump：
+
+```bash
+ln -sf ../../nvidia/cuda_nvrtc/lib/libnvrtc.so.11.2 \
+  "$(python -c 'import site;print(site.getsitepackages()[0])')/torch/lib/libnvrtc.so"
+```
 
 数据软链接（首次）：
 

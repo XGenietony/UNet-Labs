@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import re
 import cv2
 import numpy as np
 import torch
@@ -17,6 +18,19 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from models import build_model
 from engine.evaluate import fuse_boundary_skeleton
+
+
+def _order_key(p: Path) -> int:
+    """批量遍历时用于排序的最佳努力整数：优先 epoch，其次 seed，再退化为文件名中的首个数字。
+
+    兼容非 ``checkpoint_epochN`` 命名（如 ``seed0-best.pth``）；均无数字时返回 0，不会报错。
+    """
+    for pat in (r'epoch(\d+)', r'seed(\d+)'):
+        m = re.search(pat, p.stem)
+        if m:
+            return int(m.group(1))
+    m = re.search(r'(\d+)', p.stem)
+    return int(m.group(1)) if m else 0
 
 
 def _forward_prob(net, x):
@@ -254,10 +268,10 @@ def eval_exp(in_files, out_dir, model_path, net, device,
                 out_i  = outputs[i:i+1]                    # [1, C, 512, 512]
                 out_i  = F.interpolate(out_i, (oh, ow), mode='bilinear', align_corners=False)
                 if net.n_classes > 1 and not is_prob:
-                    mask = out_i.argmax(dim=1)[0]
+                    mask = out_i.argmax(dim=1)[0]          # [H, W]
                 else:
                     prob = out_i if is_prob else torch.sigmoid(out_i)
-                    mask = (prob > threshold).squeeze()[None]
+                    mask = (prob > threshold)[0, 0]        # [H, W]（out_i 恒为 [1,1,H,W]）
                 raw_masks.append((mask.cpu().numpy().astype(np.uint8), oh, ow, paths[i]))
 
     # 后处理：wireframe + 指标（线程并行）
@@ -345,7 +359,7 @@ def get_args():
     parser.add_argument('--wireframe',        type=int,   default=3,
                         help='Wireframe line thickness (px)')
     parser.add_argument('--model-dir',         type=str,   default=None,
-                        help='遍历该目录下所有 checkpoint_epochN.pth，与 --model 二选一')
+                        help='遍历该目录下所有 .pth（兼容 epochN / seedN 等命名），与 --model 二选一')
     parser.add_argument('--batch-size',  '-b', type=int,   default=8,
                         help='推理 batch size')
     parser.add_argument('--num-workers',       type=int,   default=4,
@@ -376,14 +390,10 @@ if __name__ == '__main__':
 
     # 收集所有要评估的 checkpoint
     if args.model_dir:
-        import re
         ckpt_dir = Path(args.model_dir)
-        ckpts = sorted(
-            ckpt_dir.glob('checkpoint_epoch*.pth'),
-            key=lambda p: int(re.search(r'(\d+)', p.stem).group(1))
-        )
+        ckpts = sorted(ckpt_dir.glob('*.pth'), key=_order_key)
         if not ckpts:
-            logging.error(f'No checkpoints found in {ckpt_dir}')
+            logging.error(f'No .pth checkpoints found in {ckpt_dir}')
             raise SystemExit(1)
         logging.info(f'Found {len(ckpts)} checkpoints to evaluate.')
     else:
@@ -391,12 +401,9 @@ if __name__ == '__main__':
 
     all_metrics = []
     for ckpt in ckpts:
-        import re
-        m = re.search(r'(\d+)', ckpt.stem)
-        epoch = int(m.group(1)) if m else -1
-        logging.info(f'--- Epoch {epoch} : {ckpt} ---')
+        logging.info(f'--- {ckpt.stem} : {ckpt} ---')
 
-        out_dir_ep = os.path.join(args.output_dir, f'epoch{epoch:03d}') \
+        out_dir_ep = os.path.join(args.output_dir, ckpt.stem) \
                      if args.model_dir else args.output_dir
 
         metrics = eval_exp(
@@ -414,7 +421,8 @@ if __name__ == '__main__':
             batch_size=args.batch_size,
             num_workers=args.num_workers,
         )
-        metrics['epoch'] = epoch
+        metrics['epoch']      = _order_key(ckpt)
+        metrics['checkpoint'] = ckpt.name
         if args.fold is not None:
             metrics['fold'] = args.fold
         all_metrics.append(metrics)
@@ -430,4 +438,4 @@ if __name__ == '__main__':
     # 打印最优 epoch
     if len(all_metrics) > 1:
         best = max(all_metrics, key=lambda x: x['Tol_F1'])
-        print(f"\nBest epoch: {best['epoch']}  Tol_F1={best['Tol_F1']:.4f}  F1={best['F1']:.4f}  ODS={best['ODS_F1']:.4f}")
+        print(f"\nBest checkpoint: {best['checkpoint']}  Tol_F1={best['Tol_F1']:.4f}  F1={best['F1']:.4f}  ODS={best['ODS_F1']:.4f}")

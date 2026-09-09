@@ -259,7 +259,15 @@ def get_args():
 
 
 def _epoch_from_path(p: Path) -> int:
-    m = re.search(r'epoch(\d+)', p.stem)
+    """用于排序的最佳努力整数：优先 epoch，其次 seed，再退化为文件名中的首个数字。
+
+    兼容非 ``epochN`` 命名（如 ``seed0-best.pth``）；均无数字时返回 0。
+    """
+    for pat in (r'epoch(\d+)', r'seed(\d+)'):
+        m = re.search(pat, p.stem)
+        if m:
+            return int(m.group(1))
+    m = re.search(r'(\d+)', p.stem)
     return int(m.group(1)) if m else 0
 
 
@@ -284,6 +292,12 @@ def main():
         )
     logging.info(f'Found {len(ckpts)} checkpoints in {ckpt_dir}')
 
+    if not ckpts:
+        raise SystemExit(
+            f'No .pth checkpoints found in {ckpt_dir} — '
+            f'检查 exp 名（无需带 checkpoints/ 前缀）或该目录下是否有 .pth 文件。'
+        )
+
     summary_rows = []
 
     for ckpt in ckpts:
@@ -299,7 +313,7 @@ def main():
             tol_r=args.tolerance_recall,
             n_classes=args.classes,
             bilinear=args.bilinear,
-            save_pred_dir=pred_dir / f'epoch{epoch}',
+            save_pred_dir=pred_dir / ckpt.stem,
             arch=args.arch,
         )
 
@@ -310,7 +324,7 @@ def main():
         summary_rows.append(agg)
 
         logging.info(
-            f"epoch={epoch:3d}  "
+            f"{ckpt.stem:<16}  "
             f"Dice={agg['dice']:.4f}  IoU={agg['iou']:.4f}  "
             f"Prec={agg['precision']:.4f}  Rec={agg['recall']:.4f}  "
             f"F1={agg['f1']:.4f}  OIS={agg['ois_f1']:.4f}  "
@@ -329,7 +343,7 @@ def main():
 
     best = df.loc[df['ods_f1'].idxmax()]
     print(f"\n{'='*50}")
-    print(f"Best epoch by ODS-F1: epoch {int(best['epoch'])}")
+    print(f"Best checkpoint by ODS-F1: {best['checkpoint']}")
     for m in ('dice', 'iou', 'precision', 'recall', 'f1', 'ois_f1', 'ods_f1', 'boundary_iou'):
         print(f"  {m:<14} {float(best[m]):.4f}")
 
